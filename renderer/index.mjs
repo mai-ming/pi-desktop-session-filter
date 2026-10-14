@@ -16,6 +16,12 @@
 //
 // The menu is an allow-list: the checked keys say what stays visible. No key
 // checked means "全部显示".
+//
+// The filter set belongs to a project, not to the window. `data-sidebar-project-group`
+// carries the host's own project key — the very attribute its drag-and-drop hit
+// test reads — so a project keeps its own set across restarts, renames and
+// reordering. Projects without a set of their own follow the default set in the
+// plugin settings, which is also what the pinned and standalone sections use.
 
 const ATTR = 'data-pi-session-filter';
 const HIDDEN = 'hidden';
@@ -25,16 +31,24 @@ const SIDEBAR_SELECTOR = '.sidebar-surface';
 const LIST_SELECTOR = '.sidebar-session-group-list';
 const TIME_HEADER_SELECTOR = '.sidebar-time-group-header';
 const TIME_HEADER_CLASS = 'sidebar-time-group-header';
+const GROUP_SELECTOR = '.sidebar-session-group';
+const PROJECT_KEY_ATTR = 'data-sidebar-project-group';
 const PROJECT_HEADER_SELECTOR = '.sidebar-session-group-header';
 const PROJECT_TITLE_SELECTOR = '.sidebar-session-group-title';
 
 const BUTTON_CLASS = 'pi-session-filter-button';
 const MENU_CLASS = 'pi-session-filter-menu';
 const MENU_KEY_ATTR = 'data-pi-filter-key';
+const MENU_ACTION_ATTR = 'data-pi-filter-action';
 const STYLE_ATTR = 'data-pi-session-filter-style';
 
 const NATIVE_PI_PREFIX = 'native-pi:';
 const REMOTE_PREFIX = 'remote:';
+
+// Remote project groups are the one group kind the host renders without a key
+// attribute. Their title is the only stable name they have, so a set saved for
+// one is filed under that name.
+const TITLE_KEY_PREFIX = 'title:';
 
 // The host's own group labels, copied from PI-Desktop 0.20.1's locale bundles
 // (en, zh-CN, zh-TW, de, es, fr, ko, pt-BR, tr). Matching the union means the
@@ -93,9 +107,18 @@ const MENU_GROUPS = [
     { key: 'older', label: '更早' },
   ],
 ];
+// The last group acts on the stored sets rather than on the boxes: one row hands
+// this project's set to every project, the other drops this project's own set.
+const MENU_ACTIONS = [
+  { action: 'all', label: '应用到全部项目' },
+  { action: 'default', label: '跟随默认' },
+];
+
+const DEFAULT_FILTERS = 'desktop';
 
 const DEFAULT_CONFIG = Object.freeze({
-  filters: 'desktop',
+  filters: DEFAULT_FILTERS,
+  projectFilters: Object.freeze({}),
   hideRemote: false,
   hideEmptyTimeGroups: true,
   extraPrefixes: '',
@@ -158,6 +181,15 @@ const STYLE = `
   background: var(--ds-border-subtle, rgba(127, 127, 127, 0.35));
 }
 .${MENU_CLASS} { position: fixed; z-index: 60; }
+/* The title names the project the set belongs to, and project names can be
+   long. */
+.${MENU_CLASS} .sidebar-popover-title {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.${MENU_CLASS} [${MENU_ACTION_ATTR}] { color: var(--ds-text-muted, currentColor); }
 `;
 
 let host = null;
@@ -168,6 +200,7 @@ let pollTimer = null;
 let scanTimer = null;
 let menuElement = null;
 let menuAnchor = null;
+let menuProjectKey = null;
 
 function parsePrefixes(value) {
   return String(value ?? '')
@@ -185,11 +218,63 @@ function parseFilters(value) {
   return keys;
 }
 
+// One spelling of "a filter set" for both the default and the per-project
+// values: the checked keys in menu order, `''` for 全部显示, and the default set
+// for anything unrecognisable.
+export function normalizeFilters(value) {
+  const keys = [];
+  for (const part of String(value ?? '').split(',')) {
+    const key = part.trim();
+    if (FILTER_KEYS.has(key) && !keys.includes(key)) keys.push(key);
+  }
+  if (keys.length > 0) return keys.join(',');
+  return String(value ?? '').trim() === '' ? '' : DEFAULT_FILTERS;
+}
+
+// Project sets are stored as one JSON object: { "<project key>": "<filter set>" }.
+// A key that is present wins even when its value is empty, so "this project
+// shows everything" and "this project follows the default" stay different
+// states.
+export function parseProjectFilters(value) {
+  let raw = value;
+  if (typeof raw === 'string') {
+    if (!raw.trim()) return {};
+    try {
+      raw = JSON.parse(raw);
+    } catch (error) {
+      return {};
+    }
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [key, entry] of Object.entries(raw)) {
+    const name = String(key).trim();
+    if (!name || typeof entry !== 'string') continue;
+    out[name] = normalizeFilters(entry);
+  }
+  return out;
+}
+
+// Sorted keys, so two maps that mean the same thing compare equal.
+export function stringifyProjectFilters(map) {
+  const source = map && typeof map === 'object' ? map : {};
+  const out = {};
+  for (const key of Object.keys(source).sort()) out[key] = normalizeFilters(source[key]);
+  return JSON.stringify(out);
+}
+
+export function filtersForProject(cfg, projectKey) {
+  const sets = cfg && cfg.projectFilters ? cfg.projectFilters : {};
+  if (projectKey && Object.prototype.hasOwnProperty.call(sets, projectKey)) return sets[projectKey];
+  return cfg && typeof cfg.filters === 'string' ? cfg.filters : DEFAULT_FILTERS;
+}
+
 function normalizeConfig(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const pick = (key, fallback) => (typeof source[key] === 'boolean' ? source[key] : fallback);
   return {
     filters: typeof source.filters === 'string' ? source.filters : DEFAULT_CONFIG.filters,
+    projectFilters: parseProjectFilters(source.projectFilters),
     hideRemote: pick('hideRemote', DEFAULT_CONFIG.hideRemote),
     hideEmptyTimeGroups: pick('hideEmptyTimeGroups', DEFAULT_CONFIG.hideEmptyTimeGroups),
     extraPrefixes:
@@ -200,6 +285,7 @@ function normalizeConfig(raw) {
 function sameConfig(a, b) {
   return (
     a.filters === b.filters &&
+    stringifyProjectFilters(a.projectFilters) === stringifyProjectFilters(b.projectFilters) &&
     a.hideRemote === b.hideRemote &&
     a.hideEmptyTimeGroups === b.hideEmptyTimeGroups &&
     a.extraPrefixes === b.extraPrefixes
@@ -220,11 +306,11 @@ function bucketKey(bucket) {
 }
 
 // Exported for the offline harness: pure decisions, no DOM.
-export function shouldHideSession(id, bucket, cfg = DEFAULT_CONFIG) {
+export function shouldHideSession(id, bucket, cfg = DEFAULT_CONFIG, filters = cfg.filters) {
   if (typeof id !== 'string' || !id) return false;
   if (parsePrefixes(cfg.extraPrefixes).some((prefix) => id.startsWith(prefix))) return true;
 
-  const keys = parseFilters(cfg.filters);
+  const keys = parseFilters(filters);
   if (keys.size === 0) return cfg.hideRemote === true && id.startsWith(REMOTE_PREFIX);
 
   const key = bucketKey(bucket);
@@ -255,6 +341,25 @@ function sidebarScope() {
   return document.querySelector(SIDEBAR_SELECTOR) ?? document;
 }
 
+function groupLabel(section) {
+  const title = section?.querySelector(PROJECT_TITLE_SELECTOR);
+  return (title?.textContent ?? '').replace(/\s+/g, ' ').trim();
+}
+
+// The key a project's set is filed under: the host's own project key when the
+// group has one, the visible name otherwise.
+function projectKeyOf(section) {
+  if (!section) return null;
+  const own = section.getAttribute(PROJECT_KEY_ATTR);
+  if (own) return own;
+  const label = groupLabel(section);
+  return label ? `${TITLE_KEY_PREFIX}${label}` : null;
+}
+
+function projectKeyOfRow(row) {
+  return projectKeyOf(row.closest(GROUP_SELECTOR));
+}
+
 // One pass over every session list: a row's bucket is the last header above it.
 function collectBuckets(scope) {
   const buckets = new Map();
@@ -277,7 +382,8 @@ function applyRows(scope, cfg) {
   let hidden = 0;
   for (const row of rows) {
     const id = row.getAttribute('data-sidebar-session-row') ?? '';
-    const hide = shouldHideSession(id, buckets.get(row), cfg);
+    const filters = filtersForProject(cfg, projectKeyOfRow(row));
+    const hide = shouldHideSession(id, buckets.get(row), cfg, filters);
     if (hide) hidden += 1;
     setHidden(row, hide);
   }
@@ -350,9 +456,13 @@ function mountStyle(css) {
 // ---------------------------------------------------------------- filter menu
 
 function closeMenu() {
-  if (!menuElement) return;
+  if (!menuElement) {
+    menuProjectKey = null;
+    return;
+  }
   menuElement.remove();
   menuElement = null;
+  menuProjectKey = null;
   if (menuAnchor) menuAnchor.setAttribute('aria-expanded', 'false');
   menuAnchor = null;
 }
@@ -383,30 +493,66 @@ function checkedSummary(filters) {
   return labels.join('、');
 }
 
-function persistFilters() {
+function persistConfig() {
   if (!host) return;
   Promise.resolve(
-    host.dispatch('plugin.call', { method: 'setFilters', args: { filters: config.filters } }),
+    host.dispatch('plugin.call', {
+      method: 'setConfig',
+      args: {
+        filters: config.filters,
+        projectFilters: stringifyProjectFilters(config.projectFilters),
+      },
+    }),
   ).catch(() => {});
 }
 
-function toggleFilter(key) {
-  const keys = parseFilters(config.filters);
-  if (key === '') {
-    keys.clear();
-  } else if (keys.has(key)) {
-    keys.delete(key);
-  } else {
-    keys.add(key);
-  }
-  config = { ...config, filters: [...keys].join(',') };
+function setProjectFilters(next) {
+  config = { ...config, projectFilters: next };
   apply();
   refreshMenu();
-  persistFilters();
+  persistConfig();
+}
+
+// Ticking a box writes to the project the open menu belongs to, and to nothing
+// else.
+function toggleFilterOption(optionKey) {
+  if (!menuProjectKey) return;
+  const keys = parseFilters(filtersForProject(config, menuProjectKey));
+  if (optionKey === '') {
+    keys.clear();
+  } else if (keys.has(optionKey)) {
+    keys.delete(optionKey);
+  } else {
+    keys.add(optionKey);
+  }
+  setProjectFilters({ ...config.projectFilters, [menuProjectKey]: [...keys].join(',') });
+}
+
+function runMenuAction(action) {
+  if (!menuProjectKey) return;
+  if (action === 'all') {
+    // Hand this project's set to every project, and drop the per-project sets so
+    // nothing keeps an older one.
+    config = { ...config, filters: filtersForProject(config, menuProjectKey), projectFilters: {} };
+    apply();
+    refreshMenu();
+    persistConfig();
+    return;
+  }
+  if (action === 'default') {
+    const next = { ...config.projectFilters };
+    delete next[menuProjectKey];
+    setProjectFilters(next);
+  }
 }
 
 function buildMenu(anchor, cfg) {
-  const checked = parseFilters(cfg.filters);
+  const projectKey = menuProjectKey;
+  const filters = filtersForProject(cfg, projectKey);
+  const checked = parseFilters(filters);
+  const inherited = !projectKey || !Object.prototype.hasOwnProperty.call(cfg.projectFilters, projectKey);
+  const name = groupLabel(anchor.closest(GROUP_SELECTOR));
+
   const menu = document.createElement('div');
   menu.className = `sidebar-popover sidebar-sort-menu sidebar-floating-menu ${MENU_CLASS}`;
   menu.setAttribute('role', 'menu');
@@ -414,7 +560,7 @@ function buildMenu(anchor, cfg) {
 
   const title = document.createElement('div');
   title.className = 'sidebar-popover-title';
-  title.textContent = MENU_TITLE;
+  title.textContent = `${MENU_TITLE}${name ? ` · ${name}` : ''}${inherited ? '（跟随默认）' : ''}`;
   menu.append(title);
 
   MENU_GROUPS.forEach((group, index) => {
@@ -446,11 +592,28 @@ function buildMenu(anchor, cfg) {
       button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        toggleFilter(item.key);
+        toggleFilterOption(item.key);
       });
       menu.append(button);
     }
   });
+
+  const divider = document.createElement('div');
+  divider.className = 'sidebar-popover-divider';
+  menu.append(divider);
+  for (const item of MENU_ACTIONS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('role', 'menuitem');
+    button.setAttribute(MENU_ACTION_ATTR, item.action);
+    button.append(document.createTextNode(item.label));
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      runMenuAction(item.action);
+    });
+    menu.append(button);
+  }
 
   menu.addEventListener('pointerdown', (event) => event.stopPropagation());
   return menu;
@@ -469,6 +632,7 @@ function refreshMenu() {
 function openMenu(anchor) {
   closeMenu();
   menuAnchor = anchor;
+  menuProjectKey = projectKeyOf(anchor.closest(GROUP_SELECTOR));
   anchor.setAttribute('aria-expanded', 'true');
   menuElement = buildMenu(anchor, config);
   document.body.append(menuElement);
@@ -486,17 +650,26 @@ function onDocumentKeyDown(event) {
 }
 
 function ensureButtons(scope, cfg) {
-  const active = parseFilters(cfg.filters).size > 0;
-  const label = `${MENU_TITLE}：${checkedSummary(cfg.filters)}`;
   for (const header of scope.querySelectorAll(PROJECT_HEADER_SELECTOR)) {
+    const section = header.closest(GROUP_SELECTOR);
+    const projectKey = projectKeyOf(section);
     const existing = header.querySelector(`.${BUTTON_CLASS}`);
+    // The "open a project" placeholder is a group with no sessions of its own;
+    // there is nothing to filter there.
+    if (!projectKey || !section.querySelector(ROW_SELECTOR)) {
+      if (existing) existing.remove();
+      continue;
+    }
+
+    const filters = filtersForProject(cfg, projectKey);
+    const active = parseFilters(filters).size > 0;
+    const name = groupLabel(section);
+    const label = `${MENU_TITLE}${name ? `（${name}）` : ''}：${checkedSummary(filters)}`;
     if (existing) {
       existing.setAttribute('data-pi-filter-active', active ? 'true' : 'false');
       existing.title = label;
       continue;
     }
-    const title = header.querySelector(PROJECT_TITLE_SELECTOR);
-    if (!title) continue;
 
     const button = document.createElement('button');
     button.type = 'button';
@@ -519,6 +692,7 @@ function ensureButtons(scope, cfg) {
     });
     // The host's header handler ignores clicks that land on a button, so this
     // cannot switch projects.
+    const title = header.querySelector(PROJECT_TITLE_SELECTOR);
     title.after(button);
   }
 }
@@ -618,4 +792,7 @@ export const __internals = {
   checkedSummary,
   DEFAULT_CONFIG,
   MENU_GROUPS,
+  MENU_ACTIONS,
+  groupLabel,
+  projectKeyOf,
 };

@@ -17,6 +17,10 @@
 //
 // Row ids are the host's own session ids: desktop sessions are uuids, native Pi
 // sessions start with "native-pi:", remote sessions with "remote:".
+//
+// Two project groups, so the harness can prove that a set saved for one project
+// leaves the other alone. The second project holds desktop sessions in the
+// newest bucket only: under the shipped default set nothing there is hidden.
 
 export const IDS = {
   desktopNewest: 'b0a048aa-1b9f-4cec-9765-398c1aecd545',
@@ -29,6 +33,8 @@ export const IDS = {
   desktopOlder: '2e42d7ab-f78f-4799-b9a3-c3bc79a04e8a',
   pinnedNativePi: 'native-pi:55555555-5555-4555-8555-555555555555',
   standaloneDesktop: '1d264b3a-ba6d-45b8-8814-bd7dcdbc41ad',
+  secondProjectDesktop1: 'aa11bb22-cc33-4d44-8e55-ff6677889900',
+  secondProjectDesktop2: 'bb22cc33-dd44-4e55-8f66-001122334455',
 };
 
 export function row(id, title, kind = 'desktop') {
@@ -98,6 +104,15 @@ export function buildSidebarHtml() {
               <div class="sidebar-time-group-header">更早</div>
               ${row(IDS.desktopOlder, '0920-核心四轮')}
               <button type="button" class="sidebar-load-more">加载更多（3 条）…</button>
+            </div>
+          </div>
+        </section>
+        <section class="sidebar-session-group project-group" data-sidebar-project-group="D:/Downloads/我的第二个项目">
+          ${projectHeader('我的第二个项目', 'sidebar-project-group-label-2')}
+          <div class="sidebar-session-group-clip">
+            <div class="sidebar-session-group-list">
+              ${row(IDS.secondProjectDesktop1, '0901-第二个项目 A')}
+              ${row(IDS.secondProjectDesktop2, '0901-第二个项目 B')}
             </div>
           </div>
         </section>

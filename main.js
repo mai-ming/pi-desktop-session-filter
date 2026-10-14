@@ -3,7 +3,7 @@
 // 会话来源过滤 — plugin process entry point.
 //
 // This process owns nothing visible. It answers the renderer module's config
-// question, persists the filter set picked in the sidebar menu, and registers
+// question, persists the filter sets picked in the sidebar menu, and registers
 // one declared resident service.
 //
 // The service exists because of how PI-Desktop boots. At startup the host
@@ -19,9 +19,13 @@ const SERVICE_ID = 'renderer-boot';
 
 const FILTER_KEYS = new Set(['desktop', 'pi', 'newest', 'week', 'fortnight', 'older']);
 const DEFAULT_FILTERS = 'desktop';
+const EMPTY_PROJECT_FILTERS = '{}';
+// A project key is a filesystem path, so it can be long, but not unbounded.
+const MAX_PROJECT_KEY_LENGTH = 512;
 
 const DEFAULTS = {
   filters: DEFAULT_FILTERS,
+  projectFilters: EMPTY_PROJECT_FILTERS,
   hideRemote: false,
   hideEmptyTimeGroups: true,
   extraPrefixes: '',
@@ -44,6 +48,33 @@ function asFilters(value) {
   return keys.join(',');
 }
 
+// Per-project sets are stored as one JSON object: { "<project key>": "<filter set>" }.
+// A project with no entry follows the default set. Anything malformed is dropped
+// rather than repaired, so a bad edit in the settings field cannot silently
+// filter somebody's project.
+function asProjectFilters(value) {
+  if (typeof value !== 'string') return EMPTY_PROJECT_FILTERS;
+  const text = value.trim();
+  if (!text) return EMPTY_PROJECT_FILTERS;
+
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    return EMPTY_PROJECT_FILTERS;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return EMPTY_PROJECT_FILTERS;
+
+  const out = {};
+  for (const [key, entry] of Object.entries(raw)) {
+    const name = String(key).trim();
+    if (!name || name.length > MAX_PROJECT_KEY_LENGTH) continue;
+    if (typeof entry !== 'string') continue;
+    out[name] = asFilters(entry);
+  }
+  return JSON.stringify(out);
+}
+
 async function readSettings() {
   let raw = {};
   try {
@@ -53,6 +84,7 @@ async function readSettings() {
   }
   return {
     filters: asFilters(raw.filters),
+    projectFilters: asProjectFilters(raw.projectFilters),
     hideRemote: asBoolean(raw.hideRemote, DEFAULTS.hideRemote),
     hideEmptyTimeGroups: asBoolean(raw.hideEmptyTimeGroups, DEFAULTS.hideEmptyTimeGroups),
     extraPrefixes: typeof raw.extraPrefixes === 'string' ? raw.extraPrefixes : DEFAULTS.extraPrefixes,
@@ -67,10 +99,16 @@ async function onLoad() {
     title: '切换 Pi（原生）会话屏蔽',
     keywords: ['session', 'filter', 'hide', 'pi', '会话', '过滤', '屏蔽', '来源'],
     run: async () => {
+      // The command has no project in hand, so it moves the default set — the
+      // one every project without a set of its own follows.
       const current = await readSettings();
       const next = current.filters === 'desktop' ? '' : 'desktop';
       await pi.plugin.setSettings({ filters: next });
-      await pi.ui.showToast(next === 'desktop' ? '已屏蔽 Pi（原生）会话' : '已恢复显示全部会话');
+      await pi.ui.showToast(
+        next === 'desktop'
+          ? '默认：已屏蔽 Pi（原生）会话（单独设置过的项目不受影响）'
+          : '默认：已恢复显示全部会话（单独设置过的项目不受影响）',
+      );
     },
   });
 }
@@ -96,6 +134,15 @@ async function onRendererCall(method, args) {
     const filters = asFilters(args && args.filters);
     await pi.plugin.setSettings({ filters });
     return { filters };
+  }
+  if (method === 'setConfig') {
+    const patch = {};
+    if (args && typeof args.filters === 'string') patch.filters = asFilters(args.filters);
+    if (args && typeof args.projectFilters === 'string') {
+      patch.projectFilters = asProjectFilters(args.projectFilters);
+    }
+    await pi.plugin.setSettings(patch);
+    return readSettings();
   }
   throw new Error(`unknown renderer method: ${String(method)}`);
 }
