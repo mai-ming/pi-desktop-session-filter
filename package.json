@@ -1,0 +1,12 @@
+{
+  "name": "pi-desktop-session-filter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dev manifest for the offline harness only. The plugin entry is main.js and has to stay CommonJS, so this file deliberately declares no \"type\" field.",
+  "scripts": {
+    "test": "node tools/verify.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^30.1.2"
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "id": "local.pi-session-filter",
+  "name": "会话来源过滤",
+  "version": "0.3.0",
+  "description": "在侧边栏按来源和时间筛选会话：勾选你想看到的（PI-Desktop 原生会话 / Pi 会话 / 最新 / 近 7 天 / 近 14 天 / 更早），不勾就是全部显示。项目标题栏上有一个漏斗按钮。",
+  "main": "main.js",
+  "author": "mai-ming",
+  "license": "MIT",
+  "homepage": "https://github.com/mai-ming/pi-desktop-session-filter",
+  "repository": "https://github.com/mai-ming/pi-desktop-session-filter",
+  "categories": ["productivity"],
+  "engines": {
+    "piDesktop": ">=0.20.0"
+  },
+  "permissions": ["renderer.extension", "background.service"],
+  "renderer": "renderer/index.mjs",
+  "rendererActions": ["plugin.call"],
+  "rendererCallMethods": ["getConfig", "setFilters"],
+  "safetyNotes": "Hides sidebar rows by marking them with an attribute and hiding them with one style element this plugin mounts in the host window. Adds one filter button to each project header. Registers one resident service that does no work: it exists only so the host announces the plugin to the renderer process at startup, because the boot-time plugin restore does not send the renderer's pluginChanged event. Reads no files, sends no network requests, and never touches session data.",
+  "i18n": {
+    "en": {
+      "name": "Session Source Filter",
+      "description": "Filter the sidebar by source and age: tick what you want to see (PI-Desktop sessions / Pi sessions / newest / last 7 days / last 14 days / older), untick everything for no filter. A funnel button sits on every project header.",
+      "safetyNotes": "Hides sidebar rows by marking them with an attribute and hiding them with one style element this plugin mounts in the host window. Adds one filter button to each project header. Registers one resident service that does no work: it exists only so the host announces the plugin to the renderer process at startup, because the boot-time plugin restore does not send the renderer's pluginChanged event. Reads no files, sends no network requests, and never touches session data."
+    },
+    "zh-CN": {
+      "name": "会话来源过滤",
+      "description": "在侧边栏按来源和时间筛选会话：勾选你想看到的（PI-Desktop 原生会话 / Pi 会话 / 最新 / 近 7 天 / 近 14 天 / 更早），不勾就是全部显示。项目标题栏上有一个漏斗按钮。",
+      "safetyNotes": "只做显示层过滤：给要藏的行打一个属性、再用插件自己挂在宿主窗口里的一条样式规则隐藏它们，并往每个项目标题栏加一个过滤按钮。另外注册一个不干活的常驻服务——它唯一的作用是让宿主在启动时把插件通知给渲染进程，因为启动时恢复插件的流程不发 pluginChanged 事件。不读文件、不发网络请求、不碰会话数据。"
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "id": "pi-session-filter.toggle",
+        "title": "切换 Pi（原生）会话屏蔽"
+      }
+    ],
+    "services": [
+      {
+        "id": "renderer-boot",
+        "label": "会话来源过滤：启动时唤醒渲染模块"
+      }
+    ],
+    "settings": [
+      {
+        "key": "filters",
+        "title": "显示哪些会话",
+        "description": "逗号分隔，和侧边栏漏斗菜单里的勾选是同一个开关。可选：desktop（PI-Desktop 原生会话）、pi（Pi 会话）、newest（最新）、week（近 7 天）、fortnight（近 14 天）、older（更早）。留空表示全部显示。",
+        "type": "string",
+        "default": "desktop",
+        "scope": "plugin"
+      },
+      {
+        "key": "hideRemote",
+        "title": "屏蔽远程主机会话",
+        "description": "隐藏 id 以 remote: 开头、运行在远程主机上的会话。它们不在菜单的分类里，只由这个开关控制。",
+        "type": "boolean",
+        "default": false,
+        "scope": "plugin"
+      },
+      {
+        "key": "hideEmptyTimeGroups",
+        "title": "隐藏空的时间分组标题",
+        "description": "某个时间分组（今天 / 近 7 天 …）下的会话被全部藏掉后，把这个标题一起隐藏，避免留下空标题。",
+        "type": "boolean",
+        "default": true,
+        "scope": "plugin"
+      },
+      {
+        "key": "extraPrefixes",
+        "title": "额外屏蔽的会话 id 前缀",
+        "description": "逗号分隔。命中任一前缀的会话总是被隐藏，优先级高于菜单里的勾选，例如 native-pi:,remote:。留空表示不额外屏蔽。",
+        "type": "string",
+        "default": "",
+        "scope": "plugin"
+      }
+    ]
+  }
+}
