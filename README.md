@@ -107,3 +107,19 @@ npm test
 `tools/verify.mjs` 加载真正的 `renderer/index.mjs` 和 `main.js`，把前者放进 jsdom，DOM 结构照抄自 PI-Desktop 0.20.1 的侧边栏（`tools/fixture.mjs` 里写了出处）。跑一遍：manifest 白名单和实际调用是否对齐、`getConfig` / `setFilters` 的回答、切换命令、单键与多键（并集）的判定、时间分组识别（含多语言）、漏斗按钮的注入位置与图标画法、菜单的三组横线与勾选/取消/自动回到「全部显示」、加载后新增的行、卸载后还原，以及**被藏的行在计算样式上真的等于 `display: none`**。123 项断言。
 
 `package.json` 只服务于这个测试，故意不写 `"type"` 字段：`main.js` 必须保持 CommonJS，宿主是用 `require()` 加载它的。
+
+## 打包与发布
+
+```bash
+# 在 PI-Desktop 里用 PluginPack（需要一个打开的工作区），产物落在 dist/
+node tools/check-piplug.cjs dist/local.pi-session-filter-0.3.0.piplug
+Get-FileHash dist/local.pi-session-filter-0.3.0.piplug -Algorithm SHA256
+```
+
+`tools/check-piplug.cjs` 干两件事：确认 zip 里每条都是 store（不压缩）——上游只接受这种；确认 `manifest.json` 在包根。发布前跑一次比事后被安装器拒掉省事，摘要也从这里出。
+
+插件中心是「发布者自己的仓库 + 中心重托管」的模型，默认模式 `publisher-release`：把 `.piplug` 挂到自己仓库的 release 上，中心校验字节和 manifest 后再分发。所以发一版就三步：
+
+1. 升 `manifest.json` 的版本，提交，打 tag `v<version>`；
+2. 建 release，附上 `dist/<id>-<version>.piplug`；
+3. 在插件中心提交：`pluginId`、`repository`、`path: "."`、`ref: refs/tags/v<version>`、`channel: stable`、`version`，以及 `artifact: { mode: "publisher-release", assetUrl: <release 里的文件地址>, sha256: <上一步的摘要> }`。
